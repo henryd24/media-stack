@@ -1,0 +1,13 @@
+# TRaSH Guides: Anime (Sonarr)
+sonarr:
+  anime:
+    base_url: http://sonarr-anime:8989
+    api_key: !env_var SONARR_API_KEY
+
+    quality_profiles:
+      - trash_id: 20e0fc959f1f1704bed501f23bdae76f  # [Anime] Remux-1080p
+        reset_unmatched_scores:
+          enabled: true
+
+    custom_format_groups:
+      add: []

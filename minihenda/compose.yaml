@@ -1,0 +1,116 @@
+# Stack de automatización multimedia (estilo TRaSH Guides).
+# Todo escucha solo en 127.0.0.1; Caddy (proxy/sites/*.caddy) lo publica por subdominio.
+x-arr: &arr
+  restart: unless-stopped
+  environment: &arr-env
+    PUID: ${PUID}
+    PGID: ${PGID}
+    TZ: ${TZ}
+
+services:
+  prowlarr:
+    <<: *arr
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    ports: ["127.0.0.1:9696:9696"]
+    volumes: ["${CONFIG_DIR}/prowlarr:/config"]
+
+  sonarr:
+    <<: *arr
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    networks:
+      default:
+        aliases: [sonarr-4k, sonarr-anime]  # nombre extra: Recyclarr usa 1 URL por perfil
+    ports: ["127.0.0.1:8989:8989"]
+    volumes: ["${CONFIG_DIR}/sonarr:/config", "${DATA_DIR}:/data"]
+
+  radarr:
+    <<: *arr
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    networks:
+      default:
+        aliases: [radarr-4k]  # nombre extra: Recyclarr usa 1 URL por perfil
+    ports: ["127.0.0.1:7878:7878"]
+    volumes: ["${CONFIG_DIR}/radarr:/config", "${DATA_DIR}:/data"]
+
+  bazarr:
+    <<: *arr
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    ports: ["127.0.0.1:6767:6767"]
+    volumes: ["${CONFIG_DIR}/bazarr:/config", "${DATA_DIR}/media:/data/media"]
+
+  # VPN (ProtonVPN/WireGuard). qBittorrent usa esta red: si el túnel cae, no sale tráfico (kill switch).
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    env_file: vpn.env
+    environment:
+      TZ: ${TZ}
+      VPN_SERVICE_PROVIDER: protonvpn
+      VPN_TYPE: wireguard
+      PORT_FORWARD_ONLY: "on"          # solo servidores P2P con reenvío de puertos
+      VPN_PORT_FORWARDING: "on"
+      FIREWALL_INPUT_PORTS: "8085"     # WebUI de qBittorrent accesible desde Caddy/Sonarr/Radarr
+      # Al abrir el puerto reenviado, se lo pasa a qBittorrent (mismo namespace de red)
+      VPN_PORT_FORWARDING_UP_COMMAND: >-
+        /bin/sh -c 'wget -qO- --retry-connrefused --post-data "json={\"listen_port\":{{PORTS}}}"
+        http://127.0.0.1:8085/api/v2/app/setPreferences'
+    ports:
+      - "127.0.0.1:8085:8085"   # WebUI qBittorrent
+    volumes: ["${CONFIG_DIR}/gluetun:/gluetun"]
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  qbittorrent:
+    <<: *arr
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun: { condition: service_healthy }
+    environment:
+      <<: *arr-env
+      WEBUI_PORT: 8085
+    volumes: ["${CONFIG_DIR}/qbittorrent:/config", "${DATA_DIR}/torrents:/data/torrents"]
+
+  jellyseerr:
+    image: seerr/seerr:latest  # sucesor de Jellyseerr (obsoleto, incompatible con Jellyfin 12)
+    container_name: jellyseerr
+    restart: unless-stopped
+    init: true
+    environment: { TZ: "${TZ}" }
+    ports: ["127.0.0.1:5055:5055"]
+    volumes: ["${CONFIG_DIR}/jellyseerr:/app/config"]
+    # Corre como root por defecto; el config dir se crea con tu usuario abajo
+    user: "${PUID}:${PGID}"
+
+  # Sincroniza los perfiles de calidad de TRaSH Guides a Sonarr/Radarr (1x al día)
+  recyclarr:
+    image: recyclarr/recyclarr:8
+    container_name: recyclarr
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"
+    env_file: recyclarr.env
+    environment:
+      TZ: ${TZ}
+      CRON_SCHEDULE: "@daily"
+      RECYCLARR_CREATE_CONFIG: "false"
+    volumes: ["${CONFIG_DIR}/recyclarr:/config"]
+
+  # Resuelve desafíos de Cloudflare para indexers como 1337x y EZTV (Prowlarr lo usa como proxy)
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    environment: { TZ: "${TZ}", LOG_LEVEL: info }
+    ports: ["127.0.0.1:8191:8191"]

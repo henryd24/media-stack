@@ -1,0 +1,3 @@
+http://radarr.minihenda.local, http://radarr.minihenda.lan {
+	reverse_proxy 127.0.0.1:7878
+}
